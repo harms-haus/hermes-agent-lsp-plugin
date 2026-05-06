@@ -2,11 +2,13 @@
 
 > 🔍 **30-language LSP diagnostics** — automatically after every file edit,
 > or on-demand via the `lsp_diagnostics` tool.
-> 🎯 **Navigation** — `lsp_goto_definition` and `lsp_find_references` tools.
+> 🎯 **Navigation** — `lsp_goto_definition`, `lsp_find_references`, and `lsp_find_symbol` tools.
+> ✏️ **Refactoring** — `lsp_rename_symbol` tool.
+> 🌳 **Call hierarchy** — `lsp_call_hierarchy` tool.
 
-| | |
+|| | |
 |:---|:---|
-| **Version** | 1.2.0 |
+| **Version** | 1.3.0 |
 | **License** | MIT |
 | **Hermes** | ≥ 0.11.0 |
 
@@ -24,12 +26,24 @@
    restart the LSP server first (useful after large refactors or when the
    server state feels stale).
 
-3. **Navigation tools** — `lsp_goto_definition` and `lsp_find_references` let
-   you jump to symbol definitions and find all references across the workspace.
-   These use **file+position** input (not symbol name), requiring a running
-   LSP server. See [Navigation Tools](#navigation-tools) below.
+3. **Go to definition** — `lsp_goto_definition` jumps to the definition of the
+   symbol at a given file position.
 
-4. **Persistent server management** — LSP servers are kept alive across
+4. **Find references** — `lsp_find_references` finds all references to a symbol
+   at a given file position across the workspace.
+
+5. **Find symbol** — `lsp_find_symbol` searches for symbols across the workspace
+   by name (fuzzy matching). Provide a `query` string and a `filename` from the
+   workspace to determine the correct LSP server.
+
+6. **Rename symbol** — `lsp_rename_symbol` renames a symbol at a given position
+   across the workspace. Returns a workspace edit describing all changes
+   (not applied automatically — use the `patch` tool to apply).
+
+7. **Call hierarchy** — `lsp_call_hierarchy` explores incoming callers and/or
+   outgoing callees for a function or method at a given position.
+
+8. **Persistent server management** — LSP servers are kept alive across
    multiple tool calls for performance. An idle cleanup daemon automatically
    reclaims servers that have been idle for 600 seconds (configurable via
    `idle_timeout`). All sessions are cleanly shut down when Hermes exits.
@@ -124,23 +138,27 @@ lsp_integration:
 
 ---
 
-## Using the `lsp_diagnostics` Tool
+## Tools
 
-### Syntax
+### `lsp_diagnostics`
+
+Run LSP diagnostics for a given file.
+
+#### Syntax
 
 ```
 lsp_diagnostics(filename="/path/to/file.py")
 lsp_diagnostics(filename="/path/to/file.ts", force_refresh=true)
 ```
 
-### Parameters
+#### Parameters
 
 | Parameter | Type | Required | Description |
 |:---|:---|:---|:---|
 | `filename` | `string` | **Yes** | Absolute path to the source file |
 | `force_refresh` | `boolean` | No | Restart the LSP server before collecting diagnostics. Default `false`. |
 
-### When to use `force_refresh`
+#### When to use `force_refresh`
 
 - After large cross-file refactors (the server may have stale ASTs)
 - When switching between major dependency versions
@@ -148,20 +166,6 @@ lsp_diagnostics(filename="/path/to/file.ts", force_refresh=true)
 - When a language server is known to cache aggressively (e.g. TypeScript)
 
 ---
-
-## Navigation Tools
-
-> **Note:** Navigation tools require the LSP server to be running. Servers are
-> started automatically on first use and kept alive for subsequent calls.
-> Idle servers are reclaimed after 600 seconds by default.
-
-### Workflow: File+Position vs Symbol Name
-
-Unlike some IDEs where you type a symbol name to search, the LSP navigation
-tools use **file position** input: you provide a `filename`, `line`, and
-`character` pointing to the symbol's location in the source file. The LSP
-server resolves the symbol at that position and returns definitions or
-references.
 
 ### `lsp_goto_definition`
 
@@ -187,6 +191,8 @@ lsp_goto_definition(filename="/path/to/file.py", line=42, character=10, force_re
 
 JSON with `success`, and either `locations` (list of definition locations) or
 `error`.
+
+---
 
 ### `lsp_find_references`
 
@@ -217,12 +223,92 @@ JSON with `success`, and either `references` (list of reference locations) and
 
 ---
 
+### `lsp_find_symbol`
+
+Search for symbols across the workspace by name (fuzzy matching).
+
+#### Syntax
+
+```
+lsp_find_symbol(query="MyClass", filename="/path/to/file.py")
+lsp_find_symbol(query="handle_request", filename="/path/to/file.rs", force_refresh=true)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|:---|:---|:---|:---|
+| `query` | `string` | **Yes** | The search query string. Servers typically perform fuzzy matching. |
+| `filename` | `string` | **Yes** | Absolute path to any file in the workspace (used to determine the workspace root and language server). |
+| `force_refresh` | `boolean` | No | Restart the LSP server before querying. Default `false`. |
+
+#### Returns
+
+JSON with `success`, and either `symbols` (list of matching symbols with names,
+kinds, and locations) or `error`.
+
+---
+
+### `lsp_rename_symbol`
+
+Rename a symbol at the given position across the workspace.
+
+#### Syntax
+
+```
+lsp_rename_symbol(filename="/path/to/file.py", line=42, character=10, new_name="better_name")
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|:---|:---|:---|:---|
+| `filename` | `string` | **Yes** | Absolute path to the file containing the symbol |
+| `line` | `integer` | **Yes** | 1-indexed line number of the symbol |
+| `character` | `integer` | **Yes** | 0-indexed character position of the symbol |
+| `new_name` | `string` | **Yes** | The new name for the symbol |
+| `force_refresh` | `boolean` | No | Restart the LSP server before querying. Default `false`. |
+
+#### Returns
+
+JSON with `success`, and either `changes` (workspace edit describing all files
+and ranges that would change) or `error`. Edits are **not** applied
+automatically — use the `patch` tool to apply them.
+
+---
+
+### `lsp_call_hierarchy`
+
+Explore the call hierarchy of a function or method at the given position.
+
+#### Syntax
+
+```
+lsp_call_hierarchy(filename="/path/to/file.py", line=42, character=10)
+lsp_call_hierarchy(filename="/path/to/file.py", line=42, character=10, direction="incoming")
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|:---|:---|:---|:---|
+| `filename` | `string` | **Yes** | Absolute path to the file containing the function/method |
+| `line` | `integer` | **Yes** | 1-indexed line number of the function/method |
+| `character` | `integer` | **Yes** | 0-indexed character position of the function/method name |
+| `direction` | `string` | No | Which direction to explore: `incoming` (who calls this), `outgoing` (what this calls), or `both`. Default `both`. |
+| `force_refresh` | `boolean` | No | Restart the LSP server before querying. Default `false`. |
+
+#### Returns
+
+JSON with `success`, and either `incoming` / `outgoing` call hierarchy items
+(with names, kinds, and locations) or `error`.
+
+---
+
 ## Persistent Server Management
 
-Navigation tools (`lsp_goto_definition`, `lsp_find_references`) require a
-persistent LSP server session. Unlike diagnostics (which start and stop the
-server per call), navigation tools keep servers alive across multiple calls
-for better performance.
+All LSP tools use persistent server sessions. Servers are kept alive across
+multiple tool calls for better performance.
 
 ### Idle Cleanup
 
@@ -255,26 +341,26 @@ lsp_integration:
 │  patch /        │────▶│  LSP Plugin │────▶│  Spawn LSP server  │
 │  write_file     │     │  (hook)     │     │  (lazy install)    │
 └─────────────────┘     └─────────────┘     └────────────────────┘
-         │                                            │
-         │     ┌──────────────────────────────────────┘
-         │     ▼
-         │  ┌─────────────┐
-         └──│ JSON-RPC    │
-            │ over stdio  │
-            └─────────────┘
-                   │
-                   ▼
-            ┌─────────────────────┐
-            │ Diagnostics +       │
-            │ Server stays alive  │
-            └─────────────────────┘
-                   │
-                   ▼
-            ┌─────────────────────┐
-            │ Server reused for   │
-            │ subsequent requests │
-            │ (idle cleanup: 600s)│
-            └─────────────────────┘
+        │                                            │
+        │     ┌──────────────────────────────────────┘
+        │     ▼
+        │  ┌─────────────┐
+        └──│ JSON-RPC    │
+           │ over stdio  │
+           └─────────────┘
+                  │
+                  ▼
+           ┌─────────────────────┐
+           │ Diagnostics +       │
+           │ Server stays alive  │
+           └─────────────────────┘
+                  │
+                  ▼
+           ┌─────────────────────┐
+           │ Server reused for   │
+           │ subsequent requests │
+           │ (idle cleanup: 600s)│
+           └─────────────────────┘
 ```
 
 1. **Hook fires** on every `patch`/`write_file` result.
@@ -286,9 +372,12 @@ lsp_integration:
    Sends `initialize`, `textDocument/didOpen`, collects
    `textDocument/publishDiagnostics`. The server is reused for subsequent
    requests instead of being torn down.
-6. **Idle cleanup** reclaims servers after 600 seconds of inactivity or on
+6. **Navigation & refactoring** tools (`goto_definition`, `find_references`,
+   `find_symbol`, `rename_symbol`, `call_hierarchy`) use the same persistent
+   server session to service LSP requests via JSON-RPC over stdio.
+7. **Idle cleanup** reclaims servers after 600 seconds of inactivity or on
    plugin unload.
-7. **Markdown table** is appended to the tool result for the model to read.
+8. **Markdown table** is appended to the tool result for the model to read.
 
 ---
 
@@ -316,4 +405,4 @@ PRs welcome! When adding a new language:
 
 ---
 
-*Built with ❤️ for the Hermes Agent ecosystem.*
+*Built with love for the Hermes Agent ecosystem.*
