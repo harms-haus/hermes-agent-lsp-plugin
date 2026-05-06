@@ -395,7 +395,29 @@ class ServerSession:
                     "textDocument": {
                         "publishDiagnostics": {"relatedInformation": True},
                         "definition": {"linkSupport": True},
-                    }
+                        "rename": {
+                            "dynamicRegistration": False,
+                            "prepareSupport": True,
+                            "honorsChangeAnnotations": False,
+                        },
+                        "callHierarchy": {
+                            "dynamicRegistration": False,
+                        },
+                    },
+                    "workspace": {
+                        "symbol": {
+                            "dynamicRegistration": False,
+                            "symbolKind": {
+                                "valueSet": list(range(1, 27)),
+                            },
+                            "tagSupport": {
+                                "valueSet": [1],
+                            },
+                        },
+                        "workspaceEdit": {
+                            "documentChanges": True,
+                        },
+                    },
                 },
             },
         )
@@ -1090,4 +1112,533 @@ def find_references(
         "success": True,
         "references": references,
         "count": len(references),
+    }
+
+
+# ─── Workspace symbol support ──────────────────────────────────────────────
+
+SYMBOL_KIND_NAMES = {
+    1: "File",
+    2: "Module",
+    3: "Namespace",
+    4: "Package",
+    5: "Class",
+    6: "Method",
+    7: "Property",
+    8: "Field",
+    9: "Constructor",
+    10: "Enum",
+    11: "Interface",
+    12: "Function",
+    13: "Variable",
+    14: "Constant",
+    15: "String",
+    16: "Number",
+    17: "Boolean",
+    18: "Array",
+    19: "Object",
+    20: "Key",
+    21: "Null",
+    22: "EnumMember",
+    23: "Struct",
+    24: "Event",
+    25: "Operator",
+    26: "TypeParameter",
+}
+
+
+def _parse_symbol_info(sym: dict) -> dict:
+    """Parse a SymbolInformation or WorkspaceSymbol into a uniform dict.
+
+    Handles both:
+    - SymbolInformation: {name, kind, location, containerName?}
+    - WorkspaceSymbol:   {name, kind, location {uri, range} | {…}}
+
+    Returns a dict with keys: name, kind, kind_name, location, container_name.
+    """
+    name = sym.get("name", "<unknown>")
+    kind = sym.get("kind", 0)
+    kind_name = SYMBOL_KIND_NAMES.get(kind, f"Unknown({kind})")
+    container_name = sym.get("containerName", "")
+
+    # Resolve location – SymbolInformation carries a Location dict directly
+    loc = sym.get("location", {})
+    location = _parse_location(loc) if loc else {}
+
+    return {
+        "name": name,
+        "kind": kind,
+        "kind_name": kind_name,
+        "location": location,
+        "container_name": container_name,
+    }
+
+
+def workspace_symbol(
+    file_path: str,
+    query: str,
+    lang_config: dict,
+) -> dict:
+    """Search for workspace symbols matching *query*.
+
+    Parameters
+    ----------
+    file_path : str
+        Absolute path to any file in the workspace (used to derive the
+        workspace root so the correct LSP session can be looked up).
+    query : str
+        Search string – the LSP server will use its own fuzzy/prefix matching.
+    lang_config : dict
+        Merged language configuration from config.get_language_config().
+
+    Returns
+    -------
+    dict
+        {"success": True, "symbols": [...], "count": N} on success,
+        {"success": False, "error": "..."} on failure.
+    """
+    # Resolve workspace root from the provided file path
+    workspace_root = resolve_workspace_root(file_path)
+
+    # Get or create persistent session
+    session = get_or_create_session(workspace_root, lang_config)
+    if session is None:
+        return {
+            "success": False,
+            "error": "Failed to start LSP server",
+        }
+
+    # Get timeout from config (default 30s)
+    timeout = float(lang_config.get("timeout", 30))
+
+    # Send workspace/symbol request
+    try:
+        result = session.send_request(
+            "workspace/symbol",
+            {"query": query},
+            timeout=timeout,
+        )
+    except RuntimeError as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Unexpected error: {exc}",
+        }
+
+    # Response is SymbolInformation[] | WorkspaceSymbol[] | null
+    if result is None:
+        session.touch()
+        return {
+            "success": True,
+            "symbols": [],
+            "count": 0,
+            "message": "No symbols found",
+        }
+
+    if not isinstance(result, list):
+        result = [result]
+
+    symbols = []
+    for sym in result:
+        try:
+            symbols.append(_parse_symbol_info(sym))
+        except Exception as exc:
+            logger.warning("Failed to parse symbol info: %s", exc)
+
+    session.touch()
+    return {
+        "success": True,
+        "symbols": symbols,
+        "count": len(symbols),
+    }
+
+
+# ─── Call Hierarchy helpers ─────────────────────────────────────────────────
+
+# Reuse the module-level SYMBOL_KIND_NAMES defined above
+
+
+def _parse_range(raw_range: dict) -> dict:
+    """Parse an LSP Range dict into a human-readable form.
+
+    Returns 1-indexed line numbers and 0-indexed columns.
+    """
+    start = raw_range.get("start", {})
+    end = raw_range.get("end", {})
+    return {
+        "start_line": start.get("line", 0) + 1,
+        "start_column": start.get("character", 0),
+        "end_line": end.get("line", 0) + 1,
+        "end_column": end.get("character", 0),
+    }
+
+
+def _parse_call_hierarchy_item(item: dict) -> dict:
+    """Convert a CallHierarchyItem dict to a human-readable form.
+
+    Parameters
+    ----------
+    item : dict
+        A CallHierarchyItem as returned by the LSP server, with keys:
+        name, kind, detail (optional), uri, range, selectionRange, data (optional).
+
+    Returns
+    -------
+    dict
+        Parsed item with name, kind, kind_name, detail, location, selection_range.
+    """
+    from urllib.parse import unquote
+
+    uri = item.get("uri", "")
+    if uri.startswith("file://"):
+        file_path = unquote(uri[7:])
+        if file_path.startswith("/") and len(file_path) > 2 and file_path[2] == ":":
+            file_path = file_path[1:]
+    else:
+        file_path = uri
+
+    raw_range = item.get("range", {})
+    start = raw_range.get("start", {})
+    end = raw_range.get("end", {})
+
+    kind = item.get("kind", 0)
+
+    return {
+        "name": item.get("name", ""),
+        "kind": kind,
+        "kind_name": SYMBOL_KIND_NAMES.get(kind, f"Unknown({kind})"),
+        "detail": item.get("detail", ""),
+        "location": {
+            "file": file_path,
+            "line": start.get("line", 0) + 1,
+            "column": start.get("character", 0),
+            "range": _parse_range(raw_range),
+        },
+        "selection_range": _parse_range(item.get("selectionRange", {})),
+    }
+
+
+def call_hierarchy(
+    file_path: str,
+    line: int,
+    character: int,
+    direction: str,
+    lang_config: dict,
+) -> dict:
+    """Retrieve call hierarchy (incoming and/or outgoing calls) for the symbol at position.
+
+    Parameters
+    ----------
+    file_path : str
+        Absolute path to the file.
+    line : int
+        1-indexed line number.
+    character : int
+        0-indexed character position.
+    direction : str
+        One of 'incoming', 'outgoing', or 'both'.
+    lang_config : dict
+        Merged language configuration from config.get_language_config().
+
+    Returns
+    -------
+    dict
+        ``{"success": True, "items": [...], "incoming": [...], "outgoing": [...],
+          "incoming_count": N, "outgoing_count": M}`` on success,
+        ``{"success": False, "error": "..."}`` on failure.
+    """
+    # Resolve workspace root
+    workspace_root = resolve_workspace_root(file_path)
+
+    # Get or create persistent session
+    session = get_or_create_session(workspace_root, lang_config)
+    if session is None:
+        return {
+            "success": False,
+            "error": "Failed to start LSP server",
+        }
+
+    # Open the document
+    session.open_document(file_path)
+
+    # Build file URI
+    file_uri = Path(file_path).resolve().as_uri()
+
+    # Get timeout from config (default 30s)
+    timeout = float(lang_config.get("timeout", 30))
+
+    # ── Step 1: prepareCallHierarchy ──────────────────────────────────────
+    try:
+        prepare_result = session.send_request(
+            "textDocument/prepareCallHierarchy",
+            {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line - 1, "character": character},
+            },
+            timeout=timeout,
+        )
+    except RuntimeError as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Unexpected error: {exc}",
+        }
+
+    # No items at this position
+    if prepare_result is None or (isinstance(prepare_result, list) and len(prepare_result) == 0):
+        session.touch()
+        return {
+            "success": True,
+            "items": [],
+            "incoming": [],
+            "outgoing": [],
+            "incoming_count": 0,
+            "outgoing_count": 0,
+        }
+
+    if not isinstance(prepare_result, list):
+        prepare_result = [prepare_result]
+
+    # Parse the prepared items for the response, but keep raw items for requests
+    parsed_items = []
+    for raw_item in prepare_result:
+        try:
+            parsed_items.append(_parse_call_hierarchy_item(raw_item))
+        except Exception as exc:
+            logger.warning("Failed to parse call hierarchy item: %s", exc)
+
+    # ── Step 2: incoming / outgoing calls ─────────────────────────────────
+    incoming_calls = []
+    outgoing_calls = []
+
+    for raw_item in prepare_result:
+        # Request incoming calls
+        if direction in ("incoming", "both"):
+            try:
+                inc_result = session.send_request(
+                    "callHierarchy/incomingCalls",
+                    {"item": raw_item},  # pass full raw item (preserves `data` field)
+                    timeout=timeout,
+                )
+                if isinstance(inc_result, list):
+                    for call_item in inc_result:
+                        try:
+                            from_item = call_item.get("from", {})
+                            from_ranges = [
+                                _parse_range(r)
+                                for r in call_item.get("fromRanges", [])
+                            ]
+                            incoming_calls.append({
+                                "from": _parse_call_hierarchy_item(from_item),
+                                "from_ranges": from_ranges,
+                            })
+                        except Exception as exc:
+                            logger.warning("Failed to parse incoming call item: %s", exc)
+            except Exception as exc:
+                logger.warning("incomingCalls request failed: %s", exc)
+
+        # Request outgoing calls
+        if direction in ("outgoing", "both"):
+            try:
+                out_result = session.send_request(
+                    "callHierarchy/outgoingCalls",
+                    {"item": raw_item},  # pass full raw item (preserves `data` field)
+                    timeout=timeout,
+                )
+                if isinstance(out_result, list):
+                    for call_item in out_result:
+                        try:
+                            to_item = call_item.get("to", {})
+                            from_ranges = [
+                                _parse_range(r)
+                                for r in call_item.get("fromRanges", [])
+                            ]
+                            outgoing_calls.append({
+                                "to": _parse_call_hierarchy_item(to_item),
+                                "from_ranges": from_ranges,
+                            })
+                        except Exception as exc:
+                            logger.warning("Failed to parse outgoing call item: %s", exc)
+            except Exception as exc:
+                logger.warning("outgoingCalls request failed: %s", exc)
+
+    session.touch()
+    return {
+        "success": True,
+        "items": parsed_items,
+        "incoming": incoming_calls,
+        "outgoing": outgoing_calls,
+        "incoming_count": len(incoming_calls),
+        "outgoing_count": len(outgoing_calls),
+    }
+
+
+# ─── Workspace edit parsing helper ─────────────────────────────────────────
+
+def _parse_workspace_edit(workspace_edit: dict) -> list:
+    """Parse a WorkspaceEdit dict into a structured list of file edits.
+
+    Handles both forms of the WorkspaceEdit response:
+    - ``changes``: a dict mapping document URI strings to lists of TextEdit dicts.
+    - ``documentChanges``: an array of TextDocumentEdit objects, each containing
+      a ``textDocument`` (with ``uri``) and an ``edits`` array.
+
+    Returns
+    -------
+    list
+        ``[{"file": "/path/to/file.py", "edits": [{"range": {...}, "newText": "..."}]}]``
+    """
+    from urllib.parse import unquote
+
+    result = []
+
+    # --- Handle `changes` (dict of URI -> TextEdit[]) ---
+    changes = workspace_edit.get("changes")
+    if changes and isinstance(changes, dict):
+        for uri, edits in changes.items():
+            # Convert file:// URI to local path (same logic as _parse_location)
+            if uri.startswith("file://"):
+                file_path = unquote(uri[7:])
+                if file_path.startswith("/") and len(file_path) > 2 and file_path[2] == ":":
+                    file_path = file_path[1:]
+            else:
+                file_path = uri
+
+            result.append({
+                "file": file_path,
+                "edits": list(edits) if edits else [],
+            })
+
+    # --- Handle `documentChanges` (array of TextDocumentEdit) ---
+    doc_changes = workspace_edit.get("documentChanges")
+    if doc_changes and isinstance(doc_changes, list):
+        for item in doc_changes:
+            text_doc = item.get("textDocument", {})
+            uri = text_doc.get("uri", "")
+            edits = item.get("edits", [])
+
+            if uri.startswith("file://"):
+                file_path = unquote(uri[7:])
+                if file_path.startswith("/") and len(file_path) > 2 and file_path[2] == ":":
+                    file_path = file_path[1:]
+            else:
+                file_path = uri
+
+            result.append({
+                "file": file_path,
+                "edits": list(edits) if edits else [],
+            })
+
+    return result
+
+
+# ─── Rename symbol ──────────────────────────────────────────────────────────
+
+def rename_symbol(
+    file_path: str,
+    line: int,
+    character: int,
+    new_name: str,
+    lang_config: dict,
+) -> dict:
+    """Rename the symbol at the given position.
+
+    Parameters
+    ----------
+    file_path : str
+        Absolute path to the file.
+    line : int
+        1-indexed line number.
+    character : int
+        0-indexed character position.
+    new_name : str
+        The new name for the symbol.
+    lang_config : dict
+        Merged language configuration from config.get_language_config().
+
+    Returns
+    -------
+    dict
+        {"success": True, "edits": [...], "file_count": N, "edit_count": M}
+        on success, {"success": False, "error": "..."} on failure.
+    """
+    # Resolve workspace root
+    workspace_root = resolve_workspace_root(file_path)
+
+    # Get or create persistent session
+    session = get_or_create_session(workspace_root, lang_config)
+    if session is None:
+        return {
+            "success": False,
+            "error": "Failed to start LSP server",
+        }
+
+    # Open the document
+    session.open_document(file_path)
+
+    # Build file URI
+    file_uri = Path(file_path).resolve().as_uri()
+
+    # Get timeout from config (default 30s)
+    timeout = float(lang_config.get("timeout", 30))
+
+    # Send textDocument/rename request
+    try:
+        result = session.send_request(
+            "textDocument/rename",
+            {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line - 1, "character": character},
+                "newName": new_name,
+            },
+            timeout=timeout,
+        )
+    except RuntimeError as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Unexpected error: {exc}",
+        }
+
+    # Response is a WorkspaceEdit or null
+    if result is None:
+        session.touch()
+        return {
+            "success": True,
+            "edits": [],
+            "file_count": 0,
+            "edit_count": 0,
+            "message": "No rename edits returned",
+        }
+
+    # Parse the WorkspaceEdit
+    try:
+        parsed = _parse_workspace_edit(result)
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Failed to parse workspace edit: {exc}",
+        }
+
+    # Compute totals
+    total_edits = sum(len(entry.get("edits", [])) for entry in parsed)
+
+    session.touch()
+    return {
+        "success": True,
+        "edits": parsed,
+        "file_count": len(parsed),
+        "edit_count": total_edits,
     }

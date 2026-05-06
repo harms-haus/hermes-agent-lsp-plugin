@@ -57,6 +57,7 @@ DEFAULT_CONFIG: dict = {
             "binary": "rust-analyzer",
             "install_command": "rustup component add rust-analyzer",
             "check_command": ["rust-analyzer", "--version"],
+            "server_args": [],
             "language_id": "rust",
             "indexing_delay": 8.0,
         },

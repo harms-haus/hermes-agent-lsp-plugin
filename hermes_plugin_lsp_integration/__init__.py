@@ -295,6 +295,219 @@ def _lsp_find_references_handler(**kwargs) -> str:
         return json.dumps({"success": False, "error": str(exc)})
 
 
+def _lsp_find_symbol_handler(**kwargs) -> str:
+    """Handler for the ``lsp_find_symbol`` tool.
+
+    Parameters
+    ----------
+    query : str
+        The search query string. Servers typically perform fuzzy matching.
+    filename : str
+        Absolute path to any file in the workspace (used to determine the
+        workspace root and language server).
+    force_refresh : bool, optional
+        If True, restart the LSP server before querying. Default is False.
+    """
+    query = kwargs.get("query", "")
+    filename = kwargs.get("filename", "")
+    force_refresh = kwargs.get("force_refresh", False)
+
+    if not query:
+        return json.dumps({"success": False, "error": "No query provided."})
+
+    if not filename:
+        return json.dumps({"success": False, "error": "No filename provided."})
+
+    # Validate file exists
+    file_path = Path(filename)
+    if not file_path.exists():
+        return json.dumps({"success": False, "error": f"File not found: {filename}"})
+
+    # Check if enabled
+    if not config.is_enabled():
+        return json.dumps({"success": False, "error": "LSP integration is disabled in config."})
+
+    # Resolve language from extension
+    ext = file_path.suffix.lower()
+    extensions = config.get_extensions()
+    language = extensions.get(ext)
+    if not language:
+        return json.dumps({
+            "success": False,
+            "error": f"No language mapping for extension '{ext}'.",
+        })
+
+    lang_config = config.get_language_config(language)
+    if not lang_config:
+        return json.dumps({
+            "success": False,
+            "error": f"No LSP configuration for language '{language}'.",
+        })
+
+    # Force refresh if requested
+    if force_refresh:
+        lsp_manager.clear_session_cache()
+        logger.info("LSP force refresh requested for find_symbol on %s", filename)
+
+    try:
+        result = lsp_manager.workspace_symbol(filename, query, lang_config)
+        return json.dumps(result)
+    except Exception as exc:
+        logger.warning("lsp_find_symbol tool failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+def _lsp_rename_symbol_handler(**kwargs) -> str:
+    """Handler for the ``lsp_rename_symbol`` tool.
+
+    Parameters
+    ----------
+    filename : str
+        Absolute path to the file containing the symbol.
+    line : int
+        1-indexed line number of the symbol.
+    character : int
+        0-indexed character position of the symbol.
+    new_name : str
+        The new name for the symbol.
+    force_refresh : bool, optional
+        If True, restart the LSP server before querying. Default is False.
+    """
+    filename = kwargs.get("filename", "")
+    line = kwargs.get("line")
+    character = kwargs.get("character")
+    new_name = kwargs.get("new_name", "")
+    force_refresh = kwargs.get("force_refresh", False)
+
+    if not filename:
+        return json.dumps({"success": False, "error": "No filename provided."})
+
+    if line is None or character is None:
+        return json.dumps({
+            "success": False,
+            "error": "Both 'line' and 'character' parameters are required.",
+        })
+
+    if not new_name:
+        return json.dumps({"success": False, "error": "No new_name provided."})
+
+    # Validate file exists
+    file_path = Path(filename)
+    if not file_path.exists():
+        return json.dumps({"success": False, "error": f"File not found: {filename}"})
+
+    # Check if enabled
+    if not config.is_enabled():
+        return json.dumps({"success": False, "error": "LSP integration is disabled in config."})
+
+    # Resolve language from extension
+    ext = file_path.suffix.lower()
+    extensions = config.get_extensions()
+    language = extensions.get(ext)
+    if not language:
+        return json.dumps({
+            "success": False,
+            "error": f"No language mapping for extension '{ext}'.",
+        })
+
+    lang_config = config.get_language_config(language)
+    if not lang_config:
+        return json.dumps({
+            "success": False,
+            "error": f"No LSP configuration for language '{language}'.",
+        })
+
+    # Force refresh if requested
+    if force_refresh:
+        lsp_manager.clear_session_cache()
+        logger.info("LSP force refresh requested for rename_symbol on %s", filename)
+
+    try:
+        result = lsp_manager.rename_symbol(filename, line, character, new_name, lang_config)
+        return json.dumps(result)
+    except Exception as exc:
+        logger.warning("lsp_rename_symbol tool failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+def _lsp_call_hierarchy_handler(**kwargs) -> str:
+    """Handler for the ``lsp_call_hierarchy`` tool.
+
+    Parameters
+    ----------
+    filename : str
+        Absolute path to the file containing the function/method.
+    line : int
+        1-indexed line number of the function/method.
+    character : int
+        0-indexed character position of the function/method name.
+    direction : str, optional
+        Which direction to explore: 'incoming', 'outgoing', or 'both'.
+        Default is 'both'.
+    force_refresh : bool, optional
+        If True, restart the LSP server before querying. Default is False.
+    """
+    filename = kwargs.get("filename", "")
+    line = kwargs.get("line")
+    character = kwargs.get("character")
+    direction = kwargs.get("direction", "both")
+    force_refresh = kwargs.get("force_refresh", False)
+
+    if not filename:
+        return json.dumps({"success": False, "error": "No filename provided."})
+
+    if line is None or character is None:
+        return json.dumps({
+            "success": False,
+            "error": "Both 'line' and 'character' parameters are required.",
+        })
+
+    # Validate direction
+    if direction not in ("incoming", "outgoing", "both"):
+        return json.dumps({
+            "success": False,
+            "error": f"Invalid direction '{direction}'. Must be 'incoming', 'outgoing', or 'both'.",
+        })
+
+    # Validate file exists
+    file_path = Path(filename)
+    if not file_path.exists():
+        return json.dumps({"success": False, "error": f"File not found: {filename}"})
+
+    # Check if enabled
+    if not config.is_enabled():
+        return json.dumps({"success": False, "error": "LSP integration is disabled in config."})
+
+    # Resolve language from extension
+    ext = file_path.suffix.lower()
+    extensions = config.get_extensions()
+    language = extensions.get(ext)
+    if not language:
+        return json.dumps({
+            "success": False,
+            "error": f"No language mapping for extension '{ext}'.",
+        })
+
+    lang_config = config.get_language_config(language)
+    if not lang_config:
+        return json.dumps({
+            "success": False,
+            "error": f"No LSP configuration for language '{language}'.",
+        })
+
+    # Force refresh if requested
+    if force_refresh:
+        lsp_manager.clear_session_cache()
+        logger.info("LSP force refresh requested for call_hierarchy on %s", filename)
+
+    try:
+        result = lsp_manager.call_hierarchy(filename, line, character, direction, lang_config)
+        return json.dumps(result)
+    except Exception as exc:
+        logger.warning("lsp_call_hierarchy tool failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
 def register(ctx: Any) -> None:
     """Entry point called by the Hermes plugin loader."""
     # Warm up config cache
@@ -443,6 +656,150 @@ def register(ctx: Any) -> None:
         emoji="🔗",
     )
     logger.info("lsp-integration plugin registered tool: lsp_find_references")
+
+    # ─── lsp_find_symbol tool ──────────────────────────────────────────
+    ctx.register_tool(
+        name="lsp_find_symbol",
+        toolset="lsp",
+        schema={
+            "name": "lsp_find_symbol",
+            "description": (
+                "Search for symbols across the workspace using the Language Server Protocol. "
+                "Returns matching symbols with their names, kinds (function, class, variable, etc.), "
+                "and locations. Use ``force_refresh=true`` to restart the LSP server before querying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query string. Servers typically perform fuzzy matching.",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to any file in the workspace "
+                            "(used to determine the workspace root and language server)."
+                        ),
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "If true, restart the LSP server before querying.",
+                        "default": False,
+                    },
+                },
+                "required": ["query", "filename"],
+            },
+        },
+        handler=lambda args, **kw: _lsp_find_symbol_handler(**args),
+        check_fn=lambda: True,
+        requires_env=[],
+        description="Search for symbols across the workspace (LSP workspace/symbol).",
+        emoji="📋",
+    )
+    logger.info("lsp-integration plugin registered tool: lsp_find_symbol")
+
+    # ─── lsp_rename_symbol tool ────────────────────────────────────────
+    ctx.register_tool(
+        name="lsp_rename_symbol",
+        toolset="lsp",
+        schema={
+            "name": "lsp_rename_symbol",
+            "description": (
+                "Rename a symbol at the given file position across the workspace using the "
+                "Language Server Protocol. Returns a workspace edit describing all files and "
+                "ranges that would change. The edits are NOT applied automatically — use the "
+                "``patch`` tool to apply them. Use ``force_refresh=true`` to restart the LSP "
+                "server before querying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Absolute path to the file containing the symbol.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-indexed line number of the symbol.",
+                    },
+                    "character": {
+                        "type": "integer",
+                        "description": "0-indexed character position of the symbol.",
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "The new name for the symbol.",
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "If true, restart the LSP server before querying.",
+                        "default": False,
+                    },
+                },
+                "required": ["filename", "line", "character", "new_name"],
+            },
+        },
+        handler=lambda args, **kw: _lsp_rename_symbol_handler(**args),
+        check_fn=lambda: True,
+        requires_env=[],
+        description="Rename a symbol across the workspace (LSP textDocument/rename).",
+        emoji="✏️",
+    )
+    logger.info("lsp-integration plugin registered tool: lsp_rename_symbol")
+
+    # ─── lsp_call_hierarchy tool ───────────────────────────────────────
+    ctx.register_tool(
+        name="lsp_call_hierarchy",
+        toolset="lsp",
+        schema={
+            "name": "lsp_call_hierarchy",
+            "description": (
+                "Explore the call hierarchy of a function or method at the given position "
+                "using the Language Server Protocol. Returns incoming callers (who calls this) "
+                "and/or outgoing callees (what this calls). Use ``force_refresh=true`` to "
+                "restart the LSP server before querying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Absolute path to the file containing the function/method.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-indexed line number of the function/method.",
+                    },
+                    "character": {
+                        "type": "integer",
+                        "description": "0-indexed character position of the function/method name.",
+                    },
+                    "direction": {
+                        "type": "string",
+                        "description": (
+                            "Which direction to explore: 'incoming' (who calls this), "
+                            "'outgoing' (what this calls), or 'both'. Default is 'both'."
+                        ),
+                        "enum": ["incoming", "outgoing", "both"],
+                        "default": "both",
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "If true, restart the LSP server before querying.",
+                        "default": False,
+                    },
+                },
+                "required": ["filename", "line", "character"],
+            },
+        },
+        handler=lambda args, **kw: _lsp_call_hierarchy_handler(**args),
+        check_fn=lambda: True,
+        requires_env=[],
+        description="Explore the call hierarchy of a function/method (LSP callHierarchy).",
+        emoji="🌳",
+    )
+    logger.info("lsp-integration plugin registered tool: lsp_call_hierarchy")
 
     # ─── Persistent server management ──────────────────────────────────
     # Start idle cleanup daemon (reclaims servers idle >600s)

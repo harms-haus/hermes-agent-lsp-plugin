@@ -1,9 +1,11 @@
 name: lsp-integration
-version: "1.2.0"
+version: "1.3.0"
 description: >-
   Auto LSP diagnostics for patch/write_file operations, on-demand
   `lsp_diagnostics`, navigation tools (`lsp_goto_definition`,
-  `lsp_find_references`), and persistent server management with
+  `lsp_find_references`, `lsp_find_symbol`), refactoring tools
+  (`lsp_rename_symbol`), call hierarchy exploration
+  (`lsp_call_hierarchy`), and persistent server management with
   idle cleanup. Supports 30 languages.
 hooks:
   - transform_tool_result
