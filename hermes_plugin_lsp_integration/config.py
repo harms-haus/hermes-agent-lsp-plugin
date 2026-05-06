@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG: dict = {
     "enabled": True,
     "timeout": 15,
+    "idle_timeout": 600,       # seconds before idle server is killed
+    "cleanup_interval": 60,    # seconds between cleanup checks
+    "request_timeout": 30,     # default timeout for LSP requests
+    "indexing_delay": 2.0,     # seconds to wait after init for indexing
     "languages": {
         # ── Scripting / dynamic ─────────────────────────────────────────────
         "python": {
@@ -24,6 +28,7 @@ DEFAULT_CONFIG: dict = {
             "check_command": ["pyright-langserver", "--version"],
             "server_args": ["--stdio"],
             "language_id": "python",
+            "indexing_delay": 5.0,
         },
         # ── JavaScript ecosystem ───────────────────────────────────────────
         "javascript": {
@@ -43,6 +48,7 @@ DEFAULT_CONFIG: dict = {
             "check_command": ["typescript-language-server", "--version"],
             "server_args": ["--stdio"],
             "language_id": "typescript",
+            "indexing_delay": 5.0,
         },
         # ── Systems / compiled ─────────────────────────────────────────────
         "rust": {
@@ -52,6 +58,7 @@ DEFAULT_CONFIG: dict = {
             "install_command": "rustup component add rust-analyzer",
             "check_command": ["rust-analyzer", "--version"],
             "language_id": "rust",
+            "indexing_delay": 8.0,
         },
         "c": {
             "extensions": [".c", ".h"],
@@ -79,6 +86,7 @@ DEFAULT_CONFIG: dict = {
             "check_command": ["gopls", "version"],
             "server_args": ["serve"],
             "language_id": "go",
+            "indexing_delay": 5.0,
         },
         # ── JVM ────────────────────────────────────────────────────────────
         "java": {
@@ -427,3 +435,30 @@ def get_timeout() -> int:
     """Return the diagnostic collection timeout in seconds."""
     timeout = _get_merged_config().get("timeout", 15)
     return max(1, int(timeout))
+
+
+def get_idle_timeout() -> int:
+    """Return the idle timeout in seconds before an idle server is killed."""
+    return int(_get_merged_config().get("idle_timeout", 600))
+
+
+def get_cleanup_interval() -> int:
+    """Return the interval in seconds between cleanup checks."""
+    return int(_get_merged_config().get("cleanup_interval", 60))
+
+
+def get_request_timeout() -> int:
+    """Return the default timeout in seconds for LSP requests."""
+    return int(_get_merged_config().get("request_timeout", 30))
+
+
+def get_indexing_delay(lang: str) -> float:
+    """Return the indexing delay in seconds for a language.
+
+    Checks for a per-language override first, falling back to the global
+    default indexing_delay.
+    """
+    lang_cfg = get_language_config(lang)
+    if lang_cfg is not None and "indexing_delay" in lang_cfg:
+        return float(lang_cfg["indexing_delay"])
+    return float(_get_merged_config().get("indexing_delay", 2.0))

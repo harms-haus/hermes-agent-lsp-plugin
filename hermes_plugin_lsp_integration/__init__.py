@@ -7,6 +7,7 @@ to the result of ``patch`` and ``write_file`` operations, plus a new
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 from pathlib import Path
@@ -155,6 +156,145 @@ def _lsp_diagnostics_handler(**kwargs) -> str:
         })
 
 
+def _lsp_goto_definition_handler(**kwargs) -> str:
+    """Handler for the ``lsp_goto_definition`` tool.
+
+    Parameters
+    ----------
+    filename : str
+        Absolute path to the file.
+    line : int
+        1-indexed line number.
+    character : int
+        0-indexed character position.
+    force_refresh : bool, optional
+        If True, restart the LSP server before querying. Default is False.
+    """
+    filename = kwargs.get("filename", "")
+    line = kwargs.get("line")
+    character = kwargs.get("character")
+    force_refresh = kwargs.get("force_refresh", False)
+
+    if not filename:
+        return json.dumps({"success": False, "error": "No filename provided."})
+
+    if line is None or character is None:
+        return json.dumps({
+            "success": False,
+            "error": "Both 'line' and 'character' parameters are required.",
+        })
+
+    # Validate file exists
+    file_path = Path(filename)
+    if not file_path.exists():
+        return json.dumps({"success": False, "error": f"File not found: {filename}"})
+
+    # Check if enabled
+    if not config.is_enabled():
+        return json.dumps({"success": False, "error": "LSP integration is disabled in config."})
+
+    # Resolve language from extension
+    ext = file_path.suffix.lower()
+    extensions = config.get_extensions()
+    language = extensions.get(ext)
+    if not language:
+        return json.dumps({
+            "success": False,
+            "error": f"No language mapping for extension '{ext}'.",
+        })
+
+    lang_config = config.get_language_config(language)
+    if not lang_config:
+        return json.dumps({
+            "success": False,
+            "error": f"No LSP configuration for language '{language}'.",
+        })
+
+    # Force refresh if requested
+    if force_refresh:
+        lsp_manager.clear_session_cache()
+        logger.info("LSP force refresh requested for goto_definition on %s", filename)
+
+    try:
+        result = lsp_manager.goto_definition(filename, line, character, lang_config)
+        return json.dumps(result)
+    except Exception as exc:
+        logger.warning("lsp_goto_definition tool failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+def _lsp_find_references_handler(**kwargs) -> str:
+    """Handler for the ``lsp_find_references`` tool.
+
+    Parameters
+    ----------
+    filename : str
+        Absolute path to the file.
+    line : int
+        1-indexed line number.
+    character : int
+        0-indexed character position.
+    include_declaration : bool, optional
+        Whether to include the declaration in results. Default is True.
+    force_refresh : bool, optional
+        If True, restart the LSP server before querying. Default is False.
+    """
+    filename = kwargs.get("filename", "")
+    line = kwargs.get("line")
+    character = kwargs.get("character")
+    include_declaration = kwargs.get("include_declaration", True)
+    force_refresh = kwargs.get("force_refresh", False)
+
+    if not filename:
+        return json.dumps({"success": False, "error": "No filename provided."})
+
+    if line is None or character is None:
+        return json.dumps({
+            "success": False,
+            "error": "Both 'line' and 'character' parameters are required.",
+        })
+
+    # Validate file exists
+    file_path = Path(filename)
+    if not file_path.exists():
+        return json.dumps({"success": False, "error": f"File not found: {filename}"})
+
+    # Check if enabled
+    if not config.is_enabled():
+        return json.dumps({"success": False, "error": "LSP integration is disabled in config."})
+
+    # Resolve language from extension
+    ext = file_path.suffix.lower()
+    extensions = config.get_extensions()
+    language = extensions.get(ext)
+    if not language:
+        return json.dumps({
+            "success": False,
+            "error": f"No language mapping for extension '{ext}'.",
+        })
+
+    lang_config = config.get_language_config(language)
+    if not lang_config:
+        return json.dumps({
+            "success": False,
+            "error": f"No LSP configuration for language '{language}'.",
+        })
+
+    # Force refresh if requested
+    if force_refresh:
+        lsp_manager.clear_session_cache()
+        logger.info("LSP force refresh requested for find_references on %s", filename)
+
+    try:
+        result = lsp_manager.find_references(
+            filename, line, character, include_declaration, lang_config,
+        )
+        return json.dumps(result)
+    except Exception as exc:
+        logger.warning("lsp_find_references tool failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
 def register(ctx: Any) -> None:
     """Entry point called by the Hermes plugin loader."""
     # Warm up config cache
@@ -202,3 +342,120 @@ def register(ctx: Any) -> None:
         emoji="🔍",
     )
     logger.info("lsp-integration plugin registered tool: lsp_diagnostics")
+
+    # ─── lsp_goto_definition tool ──────────────────────────────────────
+    ctx.register_tool(
+        name="lsp_goto_definition",
+        toolset="lsp",
+        schema={
+            "name": "lsp_goto_definition",
+            "description": (
+                "Find the definition of the symbol at the given file position using the "
+                "Language Server Protocol. Returns the location(s) where the symbol is "
+                "defined. Use ``force_refresh=true`` to restart the LSP server before querying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Absolute path to the file containing the symbol.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-indexed line number of the symbol.",
+                    },
+                    "character": {
+                        "type": "integer",
+                        "description": "0-indexed character position of the symbol.",
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, restart the LSP server before querying. "
+                            "Useful when the server state is stale."
+                        ),
+                        "default": False,
+                    },
+                },
+                "required": ["filename", "line", "character"],
+            },
+        },
+        handler=lambda args, **kw: _lsp_goto_definition_handler(**args),
+        check_fn=lambda: True,
+        requires_env=[],
+        description="Find the definition of a symbol at a given file position (LSP go-to-definition).",
+        emoji="🎯",
+    )
+    logger.info("lsp-integration plugin registered tool: lsp_goto_definition")
+
+    # ─── lsp_find_references tool ──────────────────────────────────────
+    ctx.register_tool(
+        name="lsp_find_references",
+        toolset="lsp",
+        schema={
+            "name": "lsp_find_references",
+            "description": (
+                "Find all references to the symbol at the given file position using the "
+                "Language Server Protocol. Returns all locations where the symbol is used "
+                "across the workspace. Use ``force_refresh=true`` to restart the LSP server "
+                "before querying."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Absolute path to the file containing the symbol.",
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-indexed line number of the symbol.",
+                    },
+                    "character": {
+                        "type": "integer",
+                        "description": "0-indexed character position of the symbol.",
+                    },
+                    "include_declaration": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether to include the declaration in the results. "
+                            "Default is true."
+                        ),
+                        "default": True,
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, restart the LSP server before querying. "
+                            "Useful when the server state is stale."
+                        ),
+                        "default": False,
+                    },
+                },
+                "required": ["filename", "line", "character"],
+            },
+        },
+        handler=lambda args, **kw: _lsp_find_references_handler(**args),
+        check_fn=lambda: True,
+        requires_env=[],
+        description="Find all references to a symbol at a given file position (LSP find-references).",
+        emoji="🔗",
+    )
+    logger.info("lsp-integration plugin registered tool: lsp_find_references")
+
+    # ─── Persistent server management ──────────────────────────────────
+    # Start idle cleanup daemon (reclaims servers idle >600s)
+    lsp_manager.start_idle_cleanup_daemon(
+        check_interval=config.get_cleanup_interval(),
+        max_idle=config.get_idle_timeout(),
+    )
+    logger.info(
+        "lsp-integration: idle cleanup daemon started (interval=%ds, max_idle=%ds)",
+        config.get_cleanup_interval(),
+        config.get_idle_timeout(),
+    )
+
+    # Register atexit handler to clean up all persistent LSP sessions
+    atexit.register(lsp_manager.cleanup_all_sessions)
+    logger.info("lsp-integration: atexit handler registered for session cleanup")

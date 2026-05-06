@@ -2,10 +2,11 @@
 
 > 🔍 **30-language LSP diagnostics** — automatically after every file edit,
 > or on-demand via the `lsp_diagnostics` tool.
+> 🎯 **Navigation** — `lsp_goto_definition` and `lsp_find_references` tools.
 
 | | |
 |:---|:---|
-| **Version** | 1.1.0 |
+| **Version** | 1.2.0 |
 | **License** | MIT |
 | **Hermes** | ≥ 0.11.0 |
 
@@ -22,6 +23,16 @@
    whenever you want a fresh diagnostic report. Use `force_refresh=true` to
    restart the LSP server first (useful after large refactors or when the
    server state feels stale).
+
+3. **Navigation tools** — `lsp_goto_definition` and `lsp_find_references` let
+   you jump to symbol definitions and find all references across the workspace.
+   These use **file+position** input (not symbol name), requiring a running
+   LSP server. See [Navigation Tools](#navigation-tools) below.
+
+4. **Persistent server management** — LSP servers are kept alive across
+   multiple tool calls for performance. An idle cleanup daemon automatically
+   reclaims servers that have been idle for 600 seconds (configurable via
+   `idle_timeout`). All sessions are cleanly shut down when Hermes exits.
 
 ---
 
@@ -138,6 +149,105 @@ lsp_diagnostics(filename="/path/to/file.ts", force_refresh=true)
 
 ---
 
+## Navigation Tools
+
+> **Note:** Navigation tools require the LSP server to be running. Servers are
+> started automatically on first use and kept alive for subsequent calls.
+> Idle servers are reclaimed after 600 seconds by default.
+
+### Workflow: File+Position vs Symbol Name
+
+Unlike some IDEs where you type a symbol name to search, the LSP navigation
+tools use **file position** input: you provide a `filename`, `line`, and
+`character` pointing to the symbol's location in the source file. The LSP
+server resolves the symbol at that position and returns definitions or
+references.
+
+### `lsp_goto_definition`
+
+Jump to the definition of the symbol at the given position.
+
+#### Syntax
+
+```
+lsp_goto_definition(filename="/path/to/file.py", line=42, character=10)
+lsp_goto_definition(filename="/path/to/file.py", line=42, character=10, force_refresh=true)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|:---|:---|:---|:---|
+| `filename` | `string` | **Yes** | Absolute path to the file containing the symbol |
+| `line` | `integer` | **Yes** | 1-indexed line number of the symbol |
+| `character` | `integer` | **Yes** | 0-indexed character position of the symbol |
+| `force_refresh` | `boolean` | No | Restart the LSP server before querying. Default `false`. |
+
+#### Returns
+
+JSON with `success`, and either `locations` (list of definition locations) or
+`error`.
+
+### `lsp_find_references`
+
+Find all references to the symbol at the given position across the workspace.
+
+#### Syntax
+
+```
+lsp_find_references(filename="/path/to/file.py", line=42, character=10)
+lsp_find_references(filename="/path/to/file.py", line=42, character=10, include_declaration=false)
+lsp_find_references(filename="/path/to/file.py", line=42, character=10, force_refresh=true)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|:---|:---|:---|:---|
+| `filename` | `string` | **Yes** | Absolute path to the file containing the symbol |
+| `line` | `integer` | **Yes** | 1-indexed line number of the symbol |
+| `character` | `integer` | **Yes** | 0-indexed character position of the symbol |
+| `include_declaration` | `boolean` | No | Include the declaration in results. Default `true`. |
+| `force_refresh` | `boolean` | No | Restart the LSP server before querying. Default `false`. |
+
+#### Returns
+
+JSON with `success`, and either `references` (list of reference locations) and
+`count`, or `error`.
+
+---
+
+## Persistent Server Management
+
+Navigation tools (`lsp_goto_definition`, `lsp_find_references`) require a
+persistent LSP server session. Unlike diagnostics (which start and stop the
+server per call), navigation tools keep servers alive across multiple calls
+for better performance.
+
+### Idle Cleanup
+
+- **Idle timeout**: 600 seconds (10 minutes) by default, configurable via
+  `idle_timeout` in `~/.hermes/config.yaml`.
+- **Cleanup interval**: Every 60 seconds, a background daemon thread checks
+  for idle or dead sessions and reclaims them.
+- **Graceful shutdown**: An `atexit` handler ensures all persistent LSP
+  sessions are cleanly shut down when Hermes exits.
+
+### Configuration
+
+```yaml
+lsp_integration:
+  enabled: true
+  idle_timeout: 600       # seconds before idle server is killed
+  cleanup_interval: 60    # seconds between cleanup checks
+  timeout: 15             # seconds to wait for diagnostics per file
+```
+
+> **Note:** The idle cleanup daemon starts automatically when the plugin
+> loads. You do not need to manually start or stop it.
+
+---
+
 ## How It Works (Architecture)
 
 ```
@@ -154,10 +264,17 @@ lsp_diagnostics(filename="/path/to/file.ts", force_refresh=true)
             └─────────────┘
                    │
                    ▼
-            ┌─────────────┐
-            │ Diagnostics │
-            │ (markdown)  │
-            └─────────────┘
+            ┌─────────────────────┐
+            │ Diagnostics +       │
+            │ Server stays alive  │
+            └─────────────────────┘
+                   │
+                   ▼
+            ┌─────────────────────┐
+            │ Server reused for   │
+            │ subsequent requests │
+            │ (idle cleanup: 600s)│
+            └─────────────────────┘
 ```
 
 1. **Hook fires** on every `patch`/`write_file` result.
@@ -165,10 +282,13 @@ lsp_diagnostics(filename="/path/to/file.ts", force_refresh=true)
 3. **Lazy install** runs `install_command` if the binary is missing.
 4. **Workspace root** is detected by walking up for project markers
    (`package.json`, `Cargo.toml`, `.git`, ...).
-5. **Full LSP session** spawns the server, sends `initialize`,
-   `textDocument/didOpen`, collects `textDocument/publishDiagnostics`,
-   then shuts down cleanly.
-6. **Markdown table** is appended to the tool result for the model to read.
+5. **Persistent server** spawns the server on first use and keeps it alive.
+   Sends `initialize`, `textDocument/didOpen`, collects
+   `textDocument/publishDiagnostics`. The server is reused for subsequent
+   requests instead of being torn down.
+6. **Idle cleanup** reclaims servers after 600 seconds of inactivity or on
+   plugin unload.
+7. **Markdown table** is appended to the tool result for the model to read.
 
 ---
 

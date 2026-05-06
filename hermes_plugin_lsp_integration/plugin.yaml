@@ -1,8 +1,10 @@
 name: lsp-integration
-version: "1.1.0"
+version: "1.2.0"
 description: >-
-  Auto LSP diagnostics for patch/write_file operations, plus on-demand
-  `lsp_diagnostics` tool with force-refresh support. Supports 30 languages.
+  Auto LSP diagnostics for patch/write_file operations, on-demand
+  `lsp_diagnostics`, navigation tools (`lsp_goto_definition`,
+  `lsp_find_references`), and persistent server management with
+  idle cleanup. Supports 30 languages.
 hooks:
   - transform_tool_result
 requires_env: []
